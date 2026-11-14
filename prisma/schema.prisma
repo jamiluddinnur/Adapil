@@ -1,0 +1,145 @@
+// Aspira.ai — Prisma schema (PostgreSQL)
+// Set DATABASE_URL in .env.local / Vercel env vars.
+// Local dev without a Postgres server: create a free hosted Postgres
+// at Neon (neon.tech) or Supabase and paste its connection string.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String            @id @default(cuid())
+  name         String
+  email        String            @unique
+  passwordHash String
+  createdAt    DateTime          @default(now())
+  sessions     Session[]
+  profile      Profile?
+  aspirations  Aspiration[]
+  issues       Issue[]
+  legDocs      LegislativeDoc[]
+  consultantMessages ConsultantMessage[]
+  subscription Subscription?
+  payments     Payment[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String   @default("")
+  role      String   @default("Anggota DPRD") // Anggota DPRD | Anggota DPR RI | Calon Kepala Daerah | Calon Legislatif | Tim Sukses
+  party     String   @default("")
+  level     String   @default("DPRD Kabupaten-Kota") // DPR RI | DPRD Provinsi | DPRD Kabupaten-Kota
+  dapilId   String   @default("")
+  dapilName String   @default("")
+  regions   String   @default("") // comma-separated kecamatan / kabupaten-kota
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Aspiration {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String   @default("")
+  text       String   @default("") @db.Text
+  source     String   @default("WhatsApp") // WhatsApp | Reses | DM | Telepon | Surat | Tatap muka
+  category   String   @default("Lainnya") // Infrastruktur | Air Bersih | Pendidikan | Kesehatan/BPJS | Bantuan Sosial | Ekonomi | Pertanian | Lingkungan | Lainnya
+  region     String   @default("") // kecamatan
+  status     String   @default("Baru") // Baru | Diproses | Selesai
+  priority   String   @default("Sedang") // Mendesak | Tinggi | Sedang | Rendah
+  followUp   String   @default("") @db.Text
+  draftReply String   @default("") @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+model Issue {
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title               String
+  platform            String   @default("TikTok") // TikTok | Instagram | X | Facebook | YouTube | WhatsApp | Media Online
+  mentions            Int      @default(0) // perkiraan jumlah unggahan
+  trend               String   @default("stabil") // naik | stabil | meredup
+  posPct              Int      @default(0)
+  neuPct              Int      @default(0)
+  negPct              Int      @default(0)
+  severity            String   @default("sedang") // rendah | sedang | tinggi
+  themes              String   @default("") // comma-separated tema utama
+  samplePosts         String   @default("") @db.Text // contoh unggahan/komentar yang ditempel tim
+  recommendation      String   @default("") @db.Text // rekomendasi pesan (3 sudut: empati, fakta, aksi)
+  clarification       String   @default("") @db.Text // draf klarifikasi hoaks
+  isHoax              Boolean  @default(false)
+  status              String   @default("Dipantau") // Dipantau | Direspons | Selesai
+  analysisNote        String   @default("") @db.Text // catatan kejujuran: estimasi dari contoh, bukan data live
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model LegislativeDoc {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // briefing | pokir | reses | pendapat | raperda | pengawasan
+  title     String
+  summary   String   @default("") @db.Text
+  findings  String   @default("") @db.Text
+  talkingPoints String @default("") @db.Text
+  questions String   @default("") @db.Text
+  actions   String   @default("") @db.Text
+  content   String   @default("") @db.Text
+  dataGaps  String   @default("") @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ConsultantMessage {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   // user | assistant
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+}
+
+model Subscription {
+  id        String    @id @default(cuid())
+  userId    String    @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan      String    @default("starter") // starter | pro | timses | kampanye
+  status    String    @default("active")
+  trialEndsAt DateTime?
+  renewsAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  orderId     String   @unique // ASPIRA-xxxx
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan        String
+  amount      Int // in IDR
+  method      String   @default("qris") // qris | ewallet | transfer | invoice | card
+  status      String   @default("pending") // pending | paid | failed
+  mode        String   @default("simulasi") // simulasi | midtrans
+  redirectUrl String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
