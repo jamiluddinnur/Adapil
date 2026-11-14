@@ -172,3 +172,4 @@ public/adapil-logo.webp  # Logo resmi Adapil.ai (dipakai di header & favicon)
   jelas sebagai estimasi dari contoh.
 - **Upload dokumen RUU/Perda/APBD:** belum ada — generator legislasi bekerja
   dari data aspirasi dapil yang tercatat, bukan dari membaca file PDF.
+  
