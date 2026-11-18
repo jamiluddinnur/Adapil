@@ -31,6 +31,7 @@ export async function POST(req: Request) {
         recommendation: String(b.recommendation || ""),
         clarification: String(b.clarification || ""),
         isHoax: Boolean(b.isHoax || false),
+        sourceUrl: String(b.sourceUrl || ""),
         status: String(b.status || "Dipantau"),
         analysisNote: String(b.analysisNote || ""),
       },

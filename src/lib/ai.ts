@@ -1,9 +1,12 @@
 // AI Adapil.ai — rule-based by default (no LLM key required).
-// If OPENAI_API_KEY is set, classification / sentiment / drafting use the
-// OpenAI chat API; otherwise the keyword engine below runs offline.
+// Bila OPENAI_API_KEY atau GEMINI_API_KEY dipasang, klasifikasi / sentimen /
+// draf memakai LLM itu (lihat src/lib/llm.ts); kalau tidak, mesin kata kunci
+// di bawah ini yang jalan offline.
 // The engine NEVER invents numbers: sentiment percentages come only from
 // the sample posts the team pasted, and legislative numbers come only from
 // server-computed dapil evidence passed in by the caller.
+
+import { llmChat } from "./llm";
 
 const CATEGORY_KEYWORDS: Array<[string, string[]]> = [
   ["Infrastruktur", ["jalan", "jembatan", "rusak", "berlubang", "aspal", "drainase", "got", "saluran", "lampu jalan", "trotoar", "irigasi", "bendungan"]],
@@ -19,6 +22,33 @@ const CATEGORY_KEYWORDS: Array<[string, string[]]> = [
 const NEG_WORDS = ["rusak", "buruk", "kecewa", "marah", "parah", "jelek", "gagal", "bohong", "hoaks", "tipu", "lambat", "tidak", "belum", "macet", "kotor", "bau", "bermasalah", "menolak", "protes", "demo", "korban", "sulit", "susah", "mahal", "naik", "ancam", "bahaya"];
 const POS_WORDS = ["terima kasih", "bagus", "baik", "mantap", "senang", "puas", "membantu", "berhasil", "lancar", "cepat", "apresiasi", "dukung", "hebat", "keren", "terbantu", "selesai"];
 
+export type LearnedCorrection = { field: string; fromValue: string; toValue: string; context: string };
+
+// Belajar dari koreksi: bila teks baru memakai kata-kata yang sama dengan
+// aspirasi yang pernah dikoreksi pengguna, pakai hasil koreksi itu.
+// Murni pencocokan kata (bukan model) — tapi inilah yang membuat klasifikasi
+// membaik dari waktu ke waktu, bukan mengulang kesalahan yang sama.
+export function applyLearnedCorrections(
+  text: string,
+  corrections: LearnedCorrection[],
+): { category?: string; priority?: string; matched: string[] } {
+  const words = (s: string) =>
+    s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length >= 4);
+  const textWords = new Set(words(text));
+  const out: { category?: string; priority?: string; matched: string[] } = { matched: [] };
+  const best: Record<string, { score: number; toValue: string; idx: number }> = {};
+  corrections.forEach((c, idx) => {
+    const ctxWords = [...new Set(words(c.context))];
+    const score = ctxWords.filter((w) => textWords.has(w)).length;
+    if (score >= 2 && (!best[c.field] || score > best[c.field].score)) {
+      best[c.field] = { score, toValue: c.toValue, idx };
+    }
+  });
+  if (best.category) { out.category = best.category.toValue; out.matched.push(`kategori → ${best.category.toValue}`); }
+  if (best.priority) { out.priority = best.priority.toValue; out.matched.push(`prioritas → ${best.priority.toValue}`); }
+  return out;
+}
+
 export function classifyAspirationRule(text: string): { category: string; priority: string; title: string } {
   const t = text.toLowerCase();
   let best = "Lainnya";
@@ -33,8 +63,10 @@ export function classifyAspirationRule(text: string): { category: string; priori
   return { category: best, priority, title };
 }
 
-export function draftReplyRule(category: string, region: string): string {
-  return `Terima kasih atas aspirasi Bapak/Ibu terkait ${category.toLowerCase()} di ${region || "dapil kami"}. Aspirasi ini sudah kami catat dan akan kami tindak lanjuti — kami akan sampaikan perkembangannya di sini. Mohon kesabarannya, dan silakan sampaikan detail tambahan bila ada.`;
+export function draftReplyRule(category: string, region: string, title = ""): string {
+  const soal = title ? `soal "${title}"` : `terkait ${category.toLowerCase()}`;
+  const wilayah = region ? ` di ${region}` : "";
+  return `Terima kasih, Bapak/Ibu sudah menyampaikan aspirasi ${soal}${wilayah}. Aspirasi ini sudah kami catat sebagai ${category} dan akan kami teruskan ke pihak terkait — kami akan memberi kabar perkembangannya di sini. Supaya cepat ditindaklanjuti, mohon tambahkan: alamat/RT, dan foto kondisi di lapangan bila ada.`;
 }
 
 export interface SentimentResult {
@@ -146,24 +178,56 @@ export function answerConsultantRule(q: string, ev: ConsultantEvidence): string 
   return `${summary}${urgentList}${issuesList}${blind}\n\nYang bisa saya bantu berdasarkan data dapil Anda:\n• "Apa yang paling mendesak minggu ini?" — prioritas tindak lanjut.\n• "Isu apa yang sedang naik?" — sentimen & rekomendasi respons.\n• "Apa yang harus saya siapkan untuk reses / rapat kerja?" — bahan legislasi dari bukti dapil.\n• "Wilayah mana yang belum terdata?" — titik buta dapil.\n\nSaya tidak bisa menjawab soal yang tidak ada datanya di aplikasi (misalnya sentimen live media sosial atau isi APBD) — untuk itu saya akan bilang datanya belum ada, bukan mengarang.${thin ? `\n\n${thin}` : ""}`;
 }
 
-/** Optional OpenAI call. Returns null when no key is set, so callers fall back to rules. */
-export async function openaiChat(system: string, userText: string): Promise<string | null> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) return null;
+/**
+ * Ekstraksi aspirasi dari pesan WhatsApp yang di-forward staf (atau yang
+ * masuk lewat webhook WhatsApp Cloud API). Tanpa LLM: aturan kata kunci +
+ * pola teks (nama pengirim, wilayah dari daftar dapil). Dengan LLM
+ * (OpenAI/Gemini): ekstraksi JSON, lalu hasilnya tetap divalidasi dengan
+ * aturan — kategori harus salah satu dari daftar resmi, wilayah harus ada
+ * di daftar dapil, sisanya diisi rule-based. TIDAK PERNAH mengarang nama
+ * atau wilayah yang tidak ada di pesan.
+ */
+export async function extractAspirationFromText(
+  raw: string,
+  regions: string[],
+): Promise<{ title: string; text: string; category: string; priority: string; region: string; senderName: string; engine: string }> {
+  const clean = raw.replace(/^\[\d{1,2}[.:]\d{2}(,\s*\d{1,2}[.:]\d{2})?\]\s*[^:]{1,40}:\s*/gm, "").trim();
+  const rule = classifyAspirationRule(clean);
+  let senderName = "";
+  // "Nama: Budi Santoso" atau "saya Budi dari Gerung" — nama harus berhuruf
+  // besar di awal, supaya "saya warga Gerung" tidak salah dibaca sebagai nama.
+  const nameMatch = raw.match(/(?:[Nn]ama\s*[:\-]\s*|[Ss]aya\s+)([A-Z][A-Za-z]{2,}(?:\s+[A-Z][A-Za-z]{2,})?)/);
+  if (nameMatch) senderName = nameMatch[1].trim();
+  const regionFound = regions.find((r) => r && clean.toLowerCase().includes(r.toLowerCase())) || "";
+  const base = {
+    title: rule.title,
+    text: clean.slice(0, 2000),
+    category: rule.category,
+    priority: rule.priority,
+    region: regionFound,
+    senderName,
+    engine: "rule-based (tanpa kunci LLM)",
+  };
+  const llm = await llmChat(
+    "Kamu mengekstrak aspirasi warga dari pesan WhatsApp. Jawab HANYA JSON: {\"judul\": \"...\", \"isi\": \"...\", \"kategori\": \"...\", \"prioritas\": \"Mendesak|Tinggi|Sedang|Rendah\", \"wilayah\": \"...\", \"nama\": \"...\"}. Kategori HARUS salah satu: Infrastruktur, Air Bersih, Pendidikan, Kesehatan/BPJS, Bantuan Sosial, Ekonomi, Pertanian, Lingkungan, Lainnya. Wilayah HARUS salah satu dari daftar berikut atau kosong bila tidak disebut: " + (regions.join(", ") || "(tidak ada daftar wilayah)") + ". Jangan mengarang nama atau wilayah yang tidak ada di pesan — isi kosong bila tidak disebut.",
+    clean.slice(0, 3000),
+  );
+  if (!llm) return base;
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [{ role: "system", content: system }, { role: "user", content: userText }],
-        temperature: 0.3,
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content || null;
+    const j = JSON.parse(llm.text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim());
+    const cat = typeof j.kategori === "string" && ["Infrastruktur", "Air Bersih", "Pendidikan", "Kesehatan/BPJS", "Bantuan Sosial", "Ekonomi", "Pertanian", "Lingkungan", "Lainnya"].includes(j.kategori) ? j.kategori : base.category;
+    const pri = typeof j.prioritas === "string" && ["Mendesak", "Tinggi", "Sedang", "Rendah"].includes(j.prioritas) ? j.prioritas : base.priority;
+    const wil = typeof j.wilayah === "string" && regions.some((r) => r.toLowerCase() === j.wilayah.toLowerCase()) ? j.wilayah : base.region;
+    return {
+      title: (typeof j.judul === "string" && j.judul.trim() ? j.judul.trim().slice(0, 80) : base.title),
+      text: (typeof j.isi === "string" && j.isi.trim() ? j.isi.trim().slice(0, 2000) : base.text),
+      category: cat,
+      priority: pri,
+      region: wil,
+      senderName: (typeof j.nama === "string" && j.nama.trim() ? j.nama.trim().slice(0, 60) : base.senderName),
+      engine: llm.provider,
+    };
   } catch {
-    return null;
+    return base;
   }
 }

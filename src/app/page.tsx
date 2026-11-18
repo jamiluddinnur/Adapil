@@ -1,10 +1,14 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type User = { id: string; name: string; email: string };
-type Profile = { name: string; role: string; party: string; level: string; dapilId: string; dapilName: string; regions: string };
-type Aspiration = { id: string; title: string; text: string; source: string; category: string; region: string; status: string; priority: string; followUp: string; draftReply: string; createdAt: string };
-type Issue = { id: string; title: string; platform: string; mentions: number; trend: string; posPct: number; neuPct: number; negPct: number; severity: string; themes: string; samplePosts: string; recommendation: string; clarification: string; isHoax: boolean; status: string; analysisNote: string };
+type Profile = { name: string; role: string; party: string; level: string; dapilId: string; dapilName: string; regions: string; phone: string };
+type Aspiration = { id: string; title: string; text: string; source: string; category: string; region: string; status: string; priority: string; followUp: string; draftReply: string; assignedTo: string; dueDate: string | null; draftStatus: string; createdAt: string };
+type TeamMember = { id: string; name: string; role: string; phone: string };
+type FollowUp = { id: string; aspirationId: string; agency: string; note: string; ref: string; status: string; date: string; createdAt: string };
+type DocEvidence = { id: string; title: string; kind: string; createdAt: string };
+type Evaluation = { totalToolCalls: number; byTool: Record<string, number>; actions: number; acceptedActions: number; acceptanceRate: number | null; approvedDrafts: number; docsCreated: number; correctionsLearned: number };
+type Issue = { id: string; title: string; platform: string; mentions: number; trend: string; posPct: number; neuPct: number; negPct: number; severity: string; themes: string; samplePosts: string; recommendation: string; clarification: string; isHoax: boolean; sourceUrl: string; status: string; analysisNote: string; createdAt: string };
 type LegDoc = { id: string; type: string; title: string; summary: string; findings: string; talkingPoints: string; questions: string; actions: string; content: string; dataGaps: string };
 type ChatMsg = { id: string; role: string; content: string; createdAt: string };
 type Evidence = { totalAspirations: number; resolved: number; unresolved: number; regionsTotal: number; regionsCovered: number; coveragePct: number; blindSpots: string[]; matrix: Array<{ category: string; total: number; unresolved: number; lever: string }>; dapilName: string; profileName: string };
@@ -37,11 +41,36 @@ export default function Home() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [auth, setAuth] = useState({ name: "", email: "", password: "" });
   // profile form
-  const [pf, setPf] = useState<Profile>({ name: "", role: "Anggota DPRD", party: "", level: "DPRD Provinsi", dapilId: "", dapilName: "", regions: "" });
+  const [pf, setPf] = useState<Profile>({ name: "", role: "Anggota DPRD", party: "", level: "DPRD Provinsi", dapilId: "", dapilName: "", regions: "", phone: "" });
+  // tim kerja
+  const [team, setTeam] = useState<TeamMember[]>([]);
+  const [memberForm, setMemberForm] = useState({ name: "", role: "Staf", phone: "" });
+  // tindak lanjut ke dinas (per aspirasi yang dibuka)
+  const [followUps, setFollowUps] = useState<FollowUp[]>([]);
+  const [allFollowUps, setAllFollowUps] = useState<FollowUp[]>([]);
+  const [fuForm, setFuForm] = useState({ agency: "", note: "", ref: "", status: "Diajukan" });
+  // dokumen pendukung legislasi (PDF)
+  const [docEvidence, setDocEvidence] = useState<DocEvidence[]>([]);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  // evaluasi agen
+  const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
+  // ekstraksi aspirasi dari pesan WhatsApp yang di-forward
+  const [waText, setWaText] = useState("");
+  const [waExtract, setWaExtract] = useState<{ title: string; text: string; category: string; priority: string; region: string; senderName: string; engine: string } | null>(null);
+  const [waBusy, setWaBusy] = useState(false);
+  // lupa / reset kata sandi
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotMsg, setForgotMsg] = useState("");
+  const [resetToken, setResetToken] = useState("");
+  const [resetPw, setResetPw] = useState("");
+  const [resetMsg, setResetMsg] = useState("");
   // aspiration form
   const [af, setAf] = useState({ title: "", text: "", source: "WhatsApp", category: "Lainnya", region: "", priority: "Sedang" });
   // issue form
-  const [iff, setIff] = useState({ title: "", platform: "TikTok", mentions: 0, samplePosts: "", isHoax: false });
+  const [iff, setIff] = useState({ title: "", platform: "TikTok", mentions: 0, samplePosts: "", isHoax: false, sourceUrl: "" });
+  // impor massal aspirasi (CSV)
+  const [bulkText, setBulkText] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   // legislative
   const [docType, setDocType] = useState("briefing");
   // konsultan AI
@@ -49,12 +78,21 @@ export default function Home() {
   const [chatQ, setChatQ] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [chatEngine, setChatEngine] = useState("");
+  const [agentTools, setAgentTools] = useState<Array<{ name: string; args: Record<string, unknown>; result: string }>>([]);
+  // Saran AI terakhir per aspirasi — dipakai untuk merekam koreksi pengguna.
+  const [aiSug, setAiSug] = useState<{ id: string; category: string; priority: string } | null>(null);
+  // Agen Pagi — pemeriksaan otomatis sekali sehari.
+  const [briefing, setBriefing] = useState<{ summary: string; actions: Array<{ id: string; kind: string; title: string; detail: string; aspirationId?: string; docType?: string }>; deliveredVia: string; createdAt: string } | null>(null);
+  const [briefingBusy, setBriefingBusy] = useState(false);
+  const briefingChecked = useRef(false);
   const SUGGESTED_Q = [
     "Apa yang paling mendesak minggu ini?",
     "Isu apa yang sedang naik di dapil saya?",
     "Apa yang harus saya siapkan untuk reses?",
     "Wilayah mana yang belum terdata?",
     "Buatkan ringkasan minggu ini",
+    "Buatkan draf balasan untuk aspirasi yang paling mendesak",
+    "Buatkan Pokir dari data dapil saya",
   ];
   async function askConsultant(q: string) {
     const question = q.trim();
@@ -62,9 +100,47 @@ export default function Home() {
     setChatBusy(true); setMsg("");
     try {
       const r = await api("/api/consultant/chat", "POST", { question });
-      setChatMsgs(r.messages || []); setChatEngine(r.engine || ""); setChatQ("");
+      setChatMsgs(r.messages || []); setChatEngine(r.engine || ""); setAgentTools(r.tools || []); setChatQ("");
     } catch (err: any) { setMsg(err.message); }
     setChatBusy(false);
+  }
+  async function runBriefing() {
+    setBriefingBusy(true);
+    try { const r = await api("/api/agent/morning-briefing", "POST"); setBriefing(r.run); } catch (err: any) { setMsg(err.message); }
+    setBriefingBusy(false);
+  }
+  const memberName = (id: string) => team.find((m) => m.id === id)?.name || "";
+  const isOverdue = (a: Aspiration) => a.status !== "Selesai" && a.dueDate ? new Date(a.dueDate).getTime() < Date.now() : false;
+  async function loadFollowUps(aspId: string) {
+    try { const r = await api(`/api/aspirations/${aspId}/followups`); setFollowUps(r.items || []); } catch { setFollowUps([]); }
+  }
+  // Ekstrak teks dari PDF di browser (pdfjs-dist) — berkas tidak diunggah ke server.
+  async function extractPdfText(file: File): Promise<string> {
+    const pdfjs: any = await import("pdfjs-dist");
+    pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: buf }).promise;
+    let out = "";
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const tc = await page.getTextContent();
+      out += tc.items.map((it: any) => it.str || "").join(" ") + "\n";
+      if (out.length > 150000) break;
+    }
+    return out.trim();
+  }
+  async function doBriefingAction(a: { kind: string; title: string; aspirationId?: string; docType?: string }) {
+    try {
+      if (a.kind === "buka_aspirasi") {
+        const target = aspirations.find((x) => x.id === a.aspirationId);
+        if (target) { setOpenAsp(target); setTab("aspirasi"); }
+        return;
+      }
+      const tool = a.kind === "buat_draf" ? "buat_draf_balasan" : "buat_dokumen";
+      const args = a.kind === "buat_draf" ? { aspirationId: a.aspirationId } : { type: a.docType || "pokir" };
+      const r = await api("/api/agent/act", "POST", { tool, args });
+      setMsg(r.summary || "Tindakan agen selesai."); loadAll();
+    } catch (err: any) { setMsg(err.message); }
   }
   const [openDoc, setOpenDoc] = useState<LegDoc | null>(null);
   const [openAsp, setOpenAsp] = useState<Aspiration | null>(null);
@@ -80,9 +156,34 @@ export default function Home() {
       const [a, i, l, p, c] = await Promise.all([api("/api/aspirations"), api("/api/issues"), api("/api/legislative"), api("/api/payments"), api("/api/consultant/chat")]);
       setAspirations(a.items || []); setIssues(i.items || []);
       setDocs(l.docs || []); setEvidence(l.evidence || null); setPayments(p.items || []); setChatMsgs(c.messages || []);
+      // Data sekunder: gagal satu tidak boleh menjatuhkan seluruh Beranda
+      // (mis. tabel baru belum ada sebelum redeploy dengan db push).
+      const [t, f, ev, evl] = await Promise.all([
+        api("/api/team").catch(() => ({ items: [] })),
+        api("/api/followups").catch(() => ({ items: [] })),
+        api("/api/legislative/evidence").catch(() => ({ items: [] })),
+        api("/api/agent/evaluation").catch(() => ({ ok: false })),
+      ]);
+      setTeam(t.items || []); setAllFollowUps(f.items || []); setDocEvidence(ev.items || []); setEvaluation(evl.ok ? evl : null);
+      // Agen Pagi: sekali per kunjungan, ambil pemeriksaan hari ini; bila belum
+      // ada, agen memeriksanya sendiri (tanpa menunggu perintah).
+      if (!briefingChecked.current) {
+        briefingChecked.current = true;
+        try {
+          const b = await api("/api/agent/morning-briefing");
+          if (b.run) setBriefing(b.run);
+          else { const r = await api("/api/agent/morning-briefing", "POST"); setBriefing(r.run); }
+        } catch { /* Agen Pagi gagal — Beranda tetap jalan tanpa pemeriksaan. */ }
+      }
     } catch { setUser(null); }
   }
   useEffect(() => { loadAll(); }, []);
+  // Tautan reset kata sandi dari email: ?reset=<token>
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const t = q.get("reset");
+    if (t) { setResetToken(t); setMode("login"); }
+  }, []);
 
   async function doAuth(e: React.FormEvent) {
     e.preventDefault(); setMsg("");
@@ -95,6 +196,19 @@ export default function Home() {
 
   const regionsList = (profile?.regions || "").split(",").map((s) => s.trim()).filter(Boolean);
   const unresolved = aspirations.filter((a) => a.status !== "Selesai");
+  // Antrean kerja hari ini: belum selesai, diurutkan Mendesak dulu lalu yang paling lama.
+  const PRIORITY_RANK: Record<string, number> = { Mendesak: 0, Tinggi: 1, Sedang: 2, Rendah: 3 };
+  const workQueue = [...unresolved].sort((a, b) => (PRIORITY_RANK[a.priority] ?? 2) - (PRIORITY_RANK[b.priority] ?? 2) || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const daysOld = (iso: string) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000));
+  function parseBulkCsv(text: string) {
+    return text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+      .filter((l) => !/^judul\s*;/i.test(l))
+      .map((line) => {
+        const c = line.split(";").map((s) => s.trim());
+        if (c.length === 1) return { title: "", text: c[0], source: "WhatsApp", category: "Lainnya", region: "", priority: "Sedang" };
+        return { title: c[0] || "", text: c[1] || c[0] || "", source: c[2] || "WhatsApp", category: c[3] || "Lainnya", region: c[4] || "", priority: c[5] || "Sedang" };
+      });
+  }
   const rising = issues.filter((i) => i.trend === "naik");
   const byCat: Record<string, number> = {};
   aspirations.forEach((a) => { byCat[a.category] = (byCat[a.category] || 0) + 1; });
@@ -105,10 +219,9 @@ export default function Home() {
       <div>
         <header className="top">
           <img src="/adapil-logo.webp" alt="Logo Adapil.ai" width={48} height={48} style={{ borderRadius: 12 }} />
-          <div><div style={{ fontSize: 22, fontWeight: 800 }}>Adapil.ai</div><div className="tagline">Setiap Aspirasi Warga Terjawab.</div></div>
+          <div><div className="brand">Adapil.ai</div><div className="tagline">Setiap Aspirasi Warga Terjawab.</div></div>
         </header>
         <div className="wrap">
-          <IndonesiaMap />
           <div className="grid g2" style={{ marginTop: 16 }}>
             <div className="card">
               <h1 style={{ marginTop: 0 }}>Dashboard Intelijen Konstituen untuk Politisi Indonesia</h1>
@@ -117,7 +230,7 @@ export default function Home() {
                 <li><b>Inbox Aspirasi:</b> WhatsApp, reses, DM — tercatat dan berstatus Baru–Diproses–Selesai.</li>
                 <li><b>Isu &amp; Sentimen:</b> analisis sentimen dari contoh unggahan tim + 3 rekomendasi pesan.</li>
                 <li><b>Legislasi:</b> Pusat Bukti Dapil, Matriks Prioritas, dan 6 jenis dokumen kerja.</li>
-                <li><b>Konsultan AI:</b> tanya-jawab soal dapil Anda — prioritas, isu naik, bahan reses — dijawab dari data dapil Anda sendiri.</li>
+                <li><b>Agen Konsultan (AI agent):</b> tanya-jawab soal dapil Anda — ia memanggil tool atas data dapil Anda sendiri (mencari aspirasi, membuat draf &amp; dokumen), memeriksa dapil tiap pagi, dan belajar dari koreksi Anda.</li>
                 <li><b>Dapil NTB lengkap:</b> DPR RI, DPRD Provinsi, dan DPRD 10 kabupaten/kota (PKPU 6/2023).</li>
               </ul>
               <p className="small">Akun demo: demo@adapil.ai / demo1234 (data contoh, ditandai sebagai contoh).</p>
@@ -134,16 +247,43 @@ export default function Home() {
                 <button className="btn-amber" type="submit">{mode === "login" ? "Masuk" : "Daftar akun"}</button>
               </form>
               {msg && <p className="small">{msg}</p>}
+              {resetToken ? (
+                <div>
+                  <h4>Buat Kata Sandi Baru</h4>
+                  <p className="small">Tautan reset dari email Anda (berlaku 1 jam, sekali pakai). Setelah berhasil, Anda harus masuk lagi di semua perangkat.</p>
+                  <form className="grid" onSubmit={async (e) => {
+                    e.preventDefault(); setResetMsg("");
+                    try { await api("/api/auth/reset", "POST", { token: resetToken, newPassword: resetPw }); setResetToken(""); setResetPw(""); setResetMsg("Kata sandi berhasil direset — silakan masuk dengan kata sandi baru."); window.history.replaceState({}, "", "/"); } catch (err: any) { setResetMsg(err.message); }
+                  }}>
+                    <input placeholder="Kata sandi baru (min. 6 karakter)" type="password" value={resetPw} onChange={(e) => setResetPw(e.target.value)} />
+                    <button className="btn-amber" type="submit">Reset kata sandi</button>
+                  </form>
+                  {resetMsg && <p className="small">{resetMsg}</p>}
+                </div>
+              ) : mode === "login" && (
+                <div>
+                  <button className="btn-ghost" style={{ padding: "6px 10px", marginTop: 8 }} onClick={() => setForgotMsg(forgotMsg === "" ? "show" : "")}>Lupa kata sandi?</button>
+                  {forgotMsg === "show" && (
+                    <form className="grid" style={{ marginTop: 8 }} onSubmit={async (e) => {
+                      e.preventDefault();
+                      try { const r = await api("/api/auth/forgot", "POST", { email: forgotEmail }); setForgotMsg(r.emailSent ? "Tautan reset sudah dikirim ke email Anda (berlaku 1 jam). Periksa kotak masuk / spam." : "Layanan email belum terpasang di server — tautan reset tidak bisa dikirim. Hubungi pengelola Adapil, atau pakai 'Ganti Kata Sandi' di dalam akun bila masih bisa masuk."); } catch (err: any) { setForgotMsg(err.message); }
+                    }}>
+                      <input placeholder="Email akun Anda" value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} />
+                      <button className="btn" type="submit">Kirim tautan reset</button>
+                    </form>
+                  )}
+                  {forgotMsg && forgotMsg !== "show" && <p className="small">{forgotMsg}</p>}
+                </div>
+              )}
               <p className="small">Sesi server 30 hari (cookie httpOnly). Data tiap akun terpisah.</p>
             </div>
           </div>
           <div className="card" style={{ marginTop: 16 }}>
-            <h3 style={{ marginTop: 0 }}>Paket (draf — belum ada pembayaran aktif)</h3>
-            <div className="grid g4">
-              <div><b>Starter</b><div className="stat">Rp1 jt</div><p className="small">/bulan · 1 politisi, 1 dapil</p></div>
-              <div><b>Pro</b><div className="stat">Rp1,7 jt</div><p className="small">/bulan · + Isu & Sentimen, Legislasi, Konsultan AI, laporan otomatis</p></div>
-              <div><b>Timses / Partai</b><div className="stat">Rp5 jt</div><p className="small">/bulan · multi-user, multi-dapil</p></div>
-              <div><b>Paket Kampanye</b><div className="stat">Rp15–50 jt</div><p className="small">per 3–6 bulan · monitoring intensif</p></div>
+            <h3 style={{ marginTop: 0 }}>Langganan — hanya 2 paket berbayar (draf — belum ada pembayaran aktif)</h3>
+            <p className="small">Mulai gratis sebagai Starter: 1 politisi, 1 dapil, inbox aspirasi.</p>
+            <div className="grid g2">
+              <div><b>Pro</b><div className="stat">Rp499 rb</div><p className="small">/bulan · + Isu & Sentimen, Legislasi, Konsultan AI, laporan otomatis</p></div>
+              <div><b>Timses / Partai</b><div className="stat">Rp1 jt</div><p className="small">/bulan · Pro + multi-user, multi-dapil</p></div>
             </div>
           </div>
         </div>
@@ -155,7 +295,7 @@ export default function Home() {
     <div>
       <header className="top">
         <img src="/adapil-logo.webp" alt="Logo Adapil.ai" width={48} height={48} style={{ borderRadius: 12 }} />
-        <div><div style={{ fontSize: 22, fontWeight: 800 }}>Adapil.ai</div><div className="tagline">Setiap Aspirasi Warga Terjawab.</div></div>
+        <div><div className="brand">Adapil.ai</div><div className="tagline">Setiap Aspirasi Warga Terjawab.</div></div>
         <div style={{ marginLeft: "auto", textAlign: "right" }}>
           <div><b>{profile?.name || user.name}</b> · {profile?.role || ""} {profile?.party ? `· ${profile.party}` : ""}</div>
           <div className="tagline">{profile?.dapilName || "Profil dapil belum diatur"} · Paket {plan}</div>
@@ -164,14 +304,13 @@ export default function Home() {
       </header>
       <div className="wrap">
         <div className="tabs">
-          {[["beranda", "Beranda"], ["profil", "Profil & Dapil"], ["aspirasi", `Aspirasi · ${unresolved.length} belum selesai`], ["isu", "Isu & Sentimen"], ["legislasi", "Legislasi"], ["konsultan", "Konsultan AI"], ["laporan", "Laporan"], ["paket", "Paket"]].map(([k, label]) => (
+          {[["beranda", "Beranda"], ["profil", "Profil & Dapil"], ["tim", `Tim · ${team.length}`], ["aspirasi", `Aspirasi · ${unresolved.length} belum selesai`], ["isu", "Isu & Sentimen"], ["legislasi", "Legislasi"], ["konsultan", "Agen Konsultan"], ["laporan", "Laporan"], ["paket", "Paket"]].map(([k, label]) => (
             <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{label}</button>
           ))}
         </div>
         {msg && <p className="small">{msg}</p>}
         {tab === "beranda" && (
           <div className="grid">
-            <IndonesiaMap compact />
             <div className="card">
               <h2 style={{ marginTop: 0 }}>Briefing Pagi — {new Date().toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</h2>
               <p>Selamat pagi, <b>{profile?.name || user.name}</b>. {profile?.dapilName ? `Dapil Anda: ${profile.dapilName}.` : "Lengkapi profil & dapil Anda di tab Profil & Dapil."}</p>
@@ -183,6 +322,41 @@ export default function Home() {
               </div>
               {rising.length > 0 && <p><span className="badge bad">Perlu respons</span> {rising.map((i) => i.title).join("; ")}</p>}
               {evidence && evidence.blindSpots.length > 0 && <p className="small">Titik buta data: {evidence.blindSpots.slice(0, 6).join(", ")}{evidence.blindSpots.length > 6 ? ` (+${evidence.blindSpots.length - 6} lagi)` : ""} — wilayah tanpa aspirasi tercatat.</p>}
+            </div>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Kerjakan Hari Ini — {workQueue.length} belum selesai</h3>
+              <p className="small">Diurutkan: paling mendesak dulu, lalu yang paling lama menunggu. Aspirasi yang sudah ≥7 hari tanpa perubahan ditandai.</p>
+              {workQueue.length === 0 && <p className="small">Semua aspirasi sudah selesai. Catat aspirasi baru di tab Aspirasi, atau impor massal dari CSV.</p>}
+              {workQueue.slice(0, 5).map((a) => (
+                <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                  <div><b>{a.title}</b><div className="small">{a.category}{a.region ? ` · ${a.region}` : ""} · prioritas {a.priority} · sudah {daysOld(a.createdAt)} hari{memberName(a.assignedTo) ? ` · penanggung jawab: ${memberName(a.assignedTo)}` : " · belum ditugaskan"}{a.dueDate ? ` · tenggat ${new Date(a.dueDate).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}` : ""}</div></div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}>
+                    {isOverdue(a) && <span className="badge bad">Lewat tenggat</span>}
+                    {daysOld(a.createdAt) >= 7 && <span className="badge bad">Tertunda {daysOld(a.createdAt)} hari</span>}
+                    <button className="btn-ghost" style={{ padding: "6px 10px" }} onClick={() => { setOpenAsp(a); loadFollowUps(a.id); setTab("aspirasi"); }}>Buka</button>
+                  </div>
+                </div>
+              ))}
+              {workQueue.length > 5 && <p className="small">+ {workQueue.length - 5} aspirasi lain di tab Aspirasi.</p>}
+            </div>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Agen Pagi — pemeriksaan otomatis hari ini</h3>
+              <p className="small">Agen memeriksa sendiri tiap pagi jam 07:00 WITA (jadwal cron) dan briefing dikirim ke WhatsApp / email bila sudah dihubungkan — isi nomor WA di tab Profil &amp; Dapil. Tindakan hanya jalan kalau kamu menekan “Lakukan”.</p>
+              {briefing ? (
+                <div>
+                  <p>{briefing.summary}</p>
+                  {briefing.actions.map((a) => (
+                    <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                      <div><b>{a.title}</b><div className="small">{a.detail}</div></div>
+                      <button className="btn-amber" style={{ padding: "6px 12px", whiteSpace: "nowrap" }} onClick={() => doBriefingAction(a)}>Lakukan</button>
+                    </div>
+                  ))}
+                  {briefing.actions.length === 0 && <p className="small">Tidak ada tindakan yang diusulkan hari ini.</p>}
+                  <p className="small">Diperiksa: {new Date(briefing.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })} · Terkirim via: {briefing.deliveredVia === "whatsapp" ? "WhatsApp" : briefing.deliveredVia === "email" ? "Email" : briefing.deliveredVia === "belum-terkirim" ? "belum terkirim (hubungkan WA/email di Vercel)" : "—"} · <button className="btn-ghost" style={{ padding: "4px 10px" }} onClick={runBriefing} disabled={briefingBusy}>{briefingBusy ? "Memeriksa…" : "Periksa lagi"}</button> <button className="btn-ghost" style={{ padding: "4px 10px" }} onClick={async () => { try { const text = `*Briefing Pagi Adapil.ai*\n\n${briefing.summary}\n\nRencana tindakan:\n${briefing.actions.map((a, i) => `${i + 1}. ${a.title} — ${a.detail}`).join("\n")}`; await navigator.clipboard.writeText(text); setMsg("Briefing disalin — tempel langsung di WhatsApp."); } catch { setMsg("Tidak bisa menyalin otomatis."); } }}>Salin briefing untuk WhatsApp</button></p>
+                </div>
+              ) : (
+                <button className="btn-amber" onClick={runBriefing} disabled={briefingBusy}>{briefingBusy ? "Agen sedang memeriksa…" : "Jalankan pemeriksaan agen"}</button>
+              )}
             </div>
             <div className="card">
               <h3 style={{ marginTop: 0 }}>Isu per Kategori</h3>
@@ -205,8 +379,59 @@ export default function Home() {
         )}
 
         {tab === "profil" && <ProfileTab pf={pf} setPf={setPf} onSaved={(p) => { setProfile(p); setMsg("Profil tersimpan."); loadAll(); }} setMsg={setMsg} />}
+        {tab === "tim" && (
+          <div className="grid">
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Tim Kerja — politisi membaca &amp; menyetujui, staf menindaklanjuti</h3>
+              <p className="small">Anggota tim ditugaskan ke aspirasi (di detail aspirasi) dengan tenggat. Yang belum ditugaskan akan muncul sebagai “belum ditugaskan” di antrean Beranda.</p>
+              <form className="grid g3" onSubmit={async (e) => {
+                e.preventDefault();
+                try { await api("/api/team", "POST", memberForm); setMemberForm({ name: "", role: "Staf", phone: "" }); setMsg("Anggota tim ditambahkan."); loadAll(); } catch (err: any) { setMsg(err.message); }
+              }}>
+                <input placeholder="Nama anggota tim" value={memberForm.name} onChange={(e) => setMemberForm({ ...memberForm, name: e.target.value })} />
+                <select value={memberForm.role} onChange={(e) => setMemberForm({ ...memberForm, role: e.target.value })}>{["Staf", "Politisi"].map((s) => <option key={s}>{s}</option>)}</select>
+                <input placeholder="No. WhatsApp (opsional)" value={memberForm.phone} onChange={(e) => setMemberForm({ ...memberForm, phone: e.target.value })} />
+                <button className="btn-amber" type="submit">Tambah anggota</button>
+              </form>
+            </div>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Anggota Tim ({team.length})</h3>
+              {team.length === 0 && <p className="small">Belum ada anggota tim. Tambahkan staf yang menerima aspirasi dari warga.</p>}
+              {team.map((m) => (
+                <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                  <div><b>{m.name}</b> <span className="tag">{m.role}</span>{m.phone ? <span className="small"> · {m.phone}</span> : ""}<div className="small">{aspirations.filter((a) => a.assignedTo === m.id && a.status !== "Selesai").length} aspirasi belum selesai ditugaskan ke {m.name}</div></div>
+                  <button className="btn-ghost" style={{ padding: "6px 10px" }} onClick={async () => { if (confirm(`Hapus ${m.name} dari tim? Aspirasi yang ditugaskan kepadanya kembali tanpa penanggung jawab.`)) { await api(`/api/team/${m.id}`, "DELETE"); loadAll(); } }}>Hapus</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {tab === "aspirasi" && (
           <div className="grid">
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Dari Pesan WhatsApp — tempel, ekstrak, simpan</h3>
+              <p className="small">Cara tercepat memasukkan aspirasi: staf <b>forward pesan warga dari WhatsApp lalu tempel di sini</b> — agen mengekstrak judul, kategori, prioritas, wilayah, dan nama pengirim. Tanpa kunci LLM, ekstraksi memakai aturan kata kunci; dengan kunci OpenAI/Gemini, LLM yang mengekstrak (tetap divalidasi ke daftar resmi). Periksa hasilnya sebelum menyimpan. Untuk pesan masuk otomatis tanpa tempel, hubungkan webhook WhatsApp (lihat README).</p>
+              <textarea rows={4} placeholder="Tempel pesan WhatsApp warga di sini, mis:&#10;Assalamualaikum, saya Budi dari Gerung. Jalan depan rumah saya rusak parah, sudah 2 bulan tidak diperbaiki. Mohon bantuan Bapak." value={waText} onChange={(e) => setWaText(e.target.value)} />
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn-amber" disabled={waBusy || !waText.trim()} onClick={async () => {
+                  setWaBusy(true); setMsg("");
+                  try { const r = await api("/api/aspirations/extract", "POST", { text: waText }); setWaExtract(r); } catch (err: any) { setMsg(err.message); }
+                  setWaBusy(false);
+                }}>{waBusy ? "Mengekstrak…" : "Ekstrak jadi aspirasi"}</button>
+                {waExtract && <button className="btn" onClick={async () => {
+                  try { await api("/api/aspirations", "POST", { title: waExtract.title, text: waExtract.text, source: "WhatsApp", category: waExtract.category, region: waExtract.region, priority: waExtract.priority }); setWaText(""); setWaExtract(null); setMsg(`Aspirasi tersimpan (${waExtract.engine}).`); loadAll(); } catch (err: any) { setMsg(err.message); }
+                }}>Simpan sebagai aspirasi</button>}
+              </div>
+              {waExtract && (
+                <div style={{ marginTop: 12, background: "#f8fafc", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
+                  <p><b>Hasil ekstraksi ({waExtract.engine}):</b></p>
+                  <p><b>{waExtract.title}</b>{waExtract.senderName ? ` — dari ${waExtract.senderName}` : ""}</p>
+                  <p className="small">{waExtract.text}</p>
+                  <p className="small">Kategori: {waExtract.category} · Prioritas: {waExtract.priority} · Wilayah: {waExtract.region || "tidak disebut di pesan"}</p>
+                  <p className="small">Periksa dulu — ubah judul/kategori di bawah bila salah, lalu tekan “Simpan sebagai aspirasi”.</p>
+                </div>
+              )}
+            </div>
             <div className="card">
               <h3 style={{ marginTop: 0 }}>Catat Aspirasi Baru</h3>
               <form className="grid" onSubmit={async (e) => {
@@ -226,7 +451,21 @@ export default function Home() {
                 <select value={af.priority} onChange={(e) => setAf({ ...af, priority: e.target.value })}>{["Mendesak", "Tinggi", "Sedang", "Rendah"].map((s) => <option key={s}>{s}</option>)}</select>
                 <button className="btn-amber" type="submit">Simpan aspirasi</button>
               </form>
-              <p className="small">Tips: setelah menyimpan, tekan “AI” pada aspirasi untuk saran kategori, prioritas, dan draf balasan. Draf tetap harus diperiksa manusia sebelum dikirim.</p>
+              <p className="small">Tips: setelah menyimpan, tekan “AI” pada aspirasi untuk saran kategori, prioritas, dan draf balasan. Draf tetap harus diperiksa manusia sebelum dikirim. Tanpa kunci OpenAI/Gemini, saran AI memakai aturan kata kunci — bukan pemahaman bahasa sungguhan.</p>
+            </div>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Impor Massal Aspirasi (CSV)</h3>
+              <p className="small">Untuk aspirasi yang sudah menumpuk di WhatsApp: salin ke CSV lalu impor sekaligus (maksimal 200 per impor). Format tiap baris, dipisah titik koma: <span className="mono">judul; isi; sumber; kategori; wilayah; prioritas</span>. Baris dengan satu kolom saja dianggap isi aspirasi.</p>
+              <p className="small">Contoh: <span className="mono">Jalan rusak di Gerung; Jalan utama Gerung berlubang dan membahayakan pengendara; WhatsApp; Infrastruktur; Gerung; Mendesak</span> · <a href={`data:text/csv;charset=utf-8,${encodeURIComponent("judul;isi;sumber;kategori;wilayah;prioritas\nJalan rusak di Gerung;Jalan utama Gerung berlubang dan membahayakan pengendara;WhatsApp;Infrastruktur;Gerung;Mendesak\n")}`} download="contoh-aspirasi.csv">Unduh contoh CSV</a></p>
+              <label className="small">Pilih berkas .csv</label>
+              <input type="file" accept=".csv,text/csv" onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; const r = new FileReader(); r.onload = () => setBulkText(String(r.result || "")); r.readAsText(f); }} />
+              <label className="small">Atau tempel isi CSV di sini</label>
+              <textarea rows={4} placeholder="judul; isi; sumber; kategori; wilayah; prioritas" value={bulkText} onChange={(e) => setBulkText(e.target.value)} />
+              <button className="btn-amber" disabled={bulkBusy || !bulkText.trim()} onClick={async () => {
+                setBulkBusy(true); setMsg("");
+                try { const rows = parseBulkCsv(bulkText); const r = await api("/api/aspirations/bulk", "POST", { rows }); setMsg(`Impor selesai: ${r.created} aspirasi masuk${r.skipped ? `, ${r.skipped} baris dilewati.` : "."}`); setBulkText(""); loadAll(); } catch (err: any) { setMsg(err.message); }
+                setBulkBusy(false);
+              }}>{bulkBusy ? "Mengimpor…" : "Impor aspirasi"}</button>
             </div>
             <div className="card">
               <h3 style={{ marginTop: 0 }}>Inbox Aspirasi ({aspirations.length})</h3>
@@ -238,8 +477,8 @@ export default function Home() {
                     <td>{a.category}</td><td>{a.region}</td>
                     <td><span className={`badge ${a.status === "Selesai" ? "ok" : a.status === "Diproses" ? "warn" : "bad"}`}>{a.status}</span></td>
                     <td style={{ whiteSpace: "nowrap" }}>
-                      <button className="btn-ghost" style={{ padding: "6px 10px", marginRight: 4 }} onClick={() => setOpenAsp(a)}>Buka</button>
-                      <button className="btn-ghost" style={{ padding: "6px 10px", marginRight: 4 }} onClick={async () => { try { const r = await api(`/api/aspirations/${a.id}/classify`, "POST"); await api(`/api/aspirations/${a.id}`, "PUT", { category: r.category, priority: r.priority, draftReply: r.draftReply }); setMsg(`AI (${r.engine}): kategori ${r.category}, prioritas ${r.priority}. Draf balasan tersimpan — periksa sebelum dikirim.`); loadAll(); } catch (err: any) { setMsg(err.message); } }}>AI</button>
+                      <button className="btn-ghost" style={{ padding: "6px 10px", marginRight: 4 }} onClick={() => { setOpenAsp(a); loadFollowUps(a.id); }}>Buka</button>
+                      <button className="btn-ghost" style={{ padding: "6px 10px", marginRight: 4 }} onClick={async () => { try { const r = await api(`/api/aspirations/${a.id}/classify`, "POST"); await api(`/api/aspirations/${a.id}`, "PUT", { category: r.category, priority: r.priority, draftReply: r.draftReply }); setAiSug({ id: a.id, category: r.category, priority: r.priority }); setMsg(`AI (${r.engine}): kategori ${r.category}, prioritas ${r.priority}. Draf balasan tersimpan — periksa sebelum dikirim.`); loadAll(); } catch (err: any) { setMsg(err.message); } }}>AI</button>
                       <button className="btn-ghost" style={{ padding: "6px 10px" }} onClick={async () => { if (confirm("Hapus aspirasi ini?")) { await api(`/api/aspirations/${a.id}`, "DELETE"); loadAll(); } }}>Hapus</button>
                     </td>
                   </tr>
@@ -253,13 +492,61 @@ export default function Home() {
                   <select value={openAsp.status} onChange={(e) => setOpenAsp({ ...openAsp, status: e.target.value })}>
                     {["Baru", "Diproses", "Selesai"].map((s) => <option key={s}>{s}</option>)}
                   </select>
+                  <label className="small">Kategori (boleh dikoreksi — koreksimu dipakai agen untuk belajar)</label>
+                  <select value={openAsp.category} onChange={(e) => setOpenAsp({ ...openAsp, category: e.target.value })}>
+                    {CATEGORIES.map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                  <label className="small">Prioritas</label>
+                  <select value={openAsp.priority} onChange={(e) => setOpenAsp({ ...openAsp, priority: e.target.value })}>
+                    {["Mendesak", "Tinggi", "Sedang", "Rendah"].map((s) => <option key={s}>{s}</option>)}
+                  </select>
+                  <label className="small">Penanggung jawab (tim)</label>
+                  <select value={openAsp.assignedTo || ""} onChange={(e) => setOpenAsp({ ...openAsp, assignedTo: e.target.value })}>
+                    <option value="">— Belum ditugaskan —</option>
+                    {team.map((m) => <option key={m.id} value={m.id}>{m.name} ({m.role})</option>)}
+                  </select>
+                  <label className="small">Tenggat tindak lanjut</label>
+                  <input type="date" value={openAsp.dueDate ? openAsp.dueDate.slice(0, 10) : ""} onChange={(e) => setOpenAsp({ ...openAsp, dueDate: e.target.value ? new Date(e.target.value).toISOString() : null })} />
                   <label className="small">Catatan tindak lanjut</label>
                   <textarea rows={2} value={openAsp.followUp} onChange={(e) => setOpenAsp({ ...openAsp, followUp: e.target.value })} />
-                  <label className="small">Draf balasan (periksa sebelum dikirim)</label>
+                  <label className="small">Draf balasan (periksa sebelum dikirim) {openAsp.draftStatus === "disetujui" ? <span className="badge ok">Disetujui</span> : openAsp.draftStatus === "ditolak" ? <span className="badge bad">Ditolak</span> : <span className="badge warn">Menunggu persetujuan</span>}</label>
                   <textarea rows={3} value={openAsp.draftReply} onChange={(e) => setOpenAsp({ ...openAsp, draftReply: e.target.value })} />
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                    <button className="btn" onClick={async () => { await api(`/api/aspirations/${openAsp.id}`, "PUT", { status: openAsp.status, followUp: openAsp.followUp, draftReply: openAsp.draftReply }); setOpenAsp(null); setMsg("Aspirasi diperbarui."); loadAll(); }}>Simpan perubahan</button>
+                  <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                    <button className="btn-ghost" style={{ padding: "6px 10px" }} onClick={async () => { await api(`/api/aspirations/${openAsp.id}`, "PUT", { draftStatus: "disetujui" }); setOpenAsp({ ...openAsp, draftStatus: "disetujui" }); setMsg("Draf disetujui — boleh dikirim ke warga."); loadAll(); }}>Setujui draf</button>
+                    <button className="btn-ghost" style={{ padding: "6px 10px" }} onClick={async () => { await api(`/api/aspirations/${openAsp.id}`, "PUT", { draftStatus: "ditolak" }); setOpenAsp({ ...openAsp, draftStatus: "ditolak" }); setMsg("Draf ditolak — edit dulu sebelum dipakai."); loadAll(); }}>Tolak draf</button>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                    <button className="btn" onClick={async () => {
+                      // Rekam koreksi: bila pengguna mengubah hasil saran AI,
+                      // agen belajar dari perubahan itu untuk klasifikasi berikutnya.
+                      if (aiSug && aiSug.id === openAsp.id) {
+                        const ctx = `${openAsp.title} ${openAsp.text}`;
+                        if (openAsp.category !== aiSug.category) { try { await api("/api/ai-corrections", "POST", { field: "category", fromValue: aiSug.category, toValue: openAsp.category, context: ctx }); } catch { /* koreksi gagal direkam — simpan tetap jalan */ } }
+                        if (openAsp.priority !== aiSug.priority) { try { await api("/api/ai-corrections", "POST", { field: "priority", fromValue: aiSug.priority, toValue: openAsp.priority, context: ctx }); } catch { /* koreksi gagal direkam — simpan tetap jalan */ } }
+                        setAiSug(null);
+                      }
+                      await api(`/api/aspirations/${openAsp.id}`, "PUT", { status: openAsp.status, category: openAsp.category, priority: openAsp.priority, followUp: openAsp.followUp, draftReply: openAsp.draftReply, assignedTo: openAsp.assignedTo || "", dueDate: openAsp.dueDate || null, draftStatus: openAsp.draftStatus }); setOpenAsp(null); setMsg("Aspirasi diperbarui."); loadAll();
+                    }}>Simpan perubahan</button>
+                    <button className="btn-amber" onClick={async () => { try { await navigator.clipboard.writeText(openAsp.draftReply || ""); setMsg("Draf disalin — tempel langsung di WhatsApp."); } catch { setMsg("Tidak bisa menyalin otomatis — salin manual dari kolom draf."); } }}>Salin draf untuk WhatsApp</button>
                     <button className="btn-ghost" onClick={() => setOpenAsp(null)}>Tutup</button>
+                  </div>
+                  <hr />
+                  <h4 style={{ marginBottom: 4 }}>Jejak Tindak Lanjut ke Dinas — bukti kerja</h4>
+                  <p className="small">Setiap langkah ke dinas/instansi dicatat di sini (nama dinas, nomor surat, status). Inilah yang nanti muncul di Laporan Bulanan sebagai bukti kerja ke warga dan partai.</p>
+                  {followUps.length === 0 && <p className="small">Belum ada tindak lanjut tercatat untuk aspirasi ini.</p>}
+                  {followUps.map((f) => (
+                    <p key={f.id} className="small" style={{ margin: "6px 0" }}><b>{f.agency}</b> — {f.status}{f.ref ? ` · ref: ${f.ref}` : ""} · {new Date(f.date).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}{f.note ? <><br />{f.note}</> : ""}</p>
+                  ))}
+                  <div className="grid g2">
+                    <input placeholder="Dinas / instansi yang dituju (mis. Dinas PUPR)" value={fuForm.agency} onChange={(e) => setFuForm({ ...fuForm, agency: e.target.value })} />
+                    <input placeholder="Nomor surat / referensi (opsional)" value={fuForm.ref} onChange={(e) => setFuForm({ ...fuForm, ref: e.target.value })} />
+                  </div>
+                  <textarea rows={2} placeholder="Catatan tindak lanjut (mis. Sudah disampaikan ke kepala dinas, menunggu jawaban tertulis)…" value={fuForm.note} onChange={(e) => setFuForm({ ...fuForm, note: e.target.value })} />
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <select value={fuForm.status} onChange={(e) => setFuForm({ ...fuForm, status: e.target.value })} style={{ maxWidth: 200 }}>{["Diajukan", "Diproses", "Selesai", "Ditolak"].map((s) => <option key={s}>{s}</option>)}</select>
+                    <button className="btn" onClick={async () => {
+                      try { await api(`/api/aspirations/${openAsp.id}/followups`, "POST", fuForm); setFuForm({ agency: "", note: "", ref: "", status: "Diajukan" }); setMsg("Tindak lanjut tercatat."); loadFollowUps(openAsp.id); loadAll(); } catch (err: any) { setMsg(err.message); }
+                    }}>Catat tindak lanjut</button>
                   </div>
                 </div>
               )}
@@ -273,7 +560,7 @@ export default function Home() {
               <p className="small">Tidak ada koneksi live ke platform media sosial. Isu dicatat tim, lalu AI menganalisis contoh unggahan yang ditempel — angkanya adalah <b>estimasi dari contoh</b>, bukan data live.</p>
               <form className="grid" onSubmit={async (e) => {
                 e.preventDefault();
-                try { await api("/api/issues", "POST", iff); setIff({ title: "", platform: "TikTok", mentions: 0, samplePosts: "", isHoax: false }); setMsg("Isu tersimpan."); loadAll(); } catch (err: any) { setMsg(err.message); }
+                try { await api("/api/issues", "POST", iff); setIff({ title: "", platform: "TikTok", mentions: 0, samplePosts: "", isHoax: false, sourceUrl: "" }); setMsg("Isu tersimpan."); loadAll(); } catch (err: any) { setMsg(err.message); }
               }}>
                 <input placeholder="Judul isu (mis. Keluhan jalan rusak Gerung viral)" value={iff.title} onChange={(e) => setIff({ ...iff, title: e.target.value })} />
                 <div className="grid g2">
@@ -281,6 +568,7 @@ export default function Home() {
                   <input type="number" placeholder="Perkiraan jumlah unggahan" value={iff.mentions || ""} onChange={(e) => setIff({ ...iff, mentions: Number(e.target.value) })} />
                 </div>
                 <textarea rows={3} placeholder="Tempel contoh unggahan/komentar warga (satu per baris)…" value={iff.samplePosts} onChange={(e) => setIff({ ...iff, samplePosts: e.target.value })} />
+                <input placeholder="Tautan sumber (opsional) — mis. https://… berita / unggahan asli" value={iff.sourceUrl} onChange={(e) => setIff({ ...iff, sourceUrl: e.target.value })} />
                 <label><input type="checkbox" checked={iff.isHoax} onChange={(e) => setIff({ ...iff, isHoax: e.target.checked })} style={{ width: "auto" }} /> Ini hoaks / kabar yang perlu diklarifikasi</label>
                 <button className="btn-amber" type="submit">Simpan isu</button>
               </form>
@@ -291,7 +579,8 @@ export default function Home() {
               {issues.map((i) => (
                 <div key={i.id} className="card" style={{ marginBottom: 12 }}>
                   <b>{i.title}</b> {i.isHoax && <span className="badge bad">HOAKS</span>} <span className="tag">{i.platform}</span>
-                  <div className="small">~{i.mentions} unggahan · tren {i.trend} · tingkat {i.severity} · status {i.status}</div>
+                  {i.isHoax && !i.sourceUrl && <p className="small" style={{ color: "#b91c1c", fontWeight: 700 }}>⛔ Hoaks tanpa sumber resmi — jangan terbitkan klarifikasi dulu. Tempel tautan sumber (berita / unggahan asli / pernyataan resmi) pada isu ini, lalu jalankan Analisis AI lagi. Klarifikasi tanpa sumber bisa menjadi fitnah.</p>}
+                  <div className="small">~{i.mentions} unggahan (perkiraan tim, bukan data live) · tren {i.trend} · tingkat {i.severity} · status {i.status} · dicatat {i.createdAt ? new Date(i.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" }) : "—"}{i.sourceUrl ? <> · <a href={i.sourceUrl} target="_blank" rel="noreferrer">Lihat sumber</a></> : ""}</div>
                   <div style={{ marginTop: 8 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}><span>Positif {i.posPct}%</span><span>Netral {i.neuPct}%</span><span>Negatif {i.negPct}%</span></div>
                     <div className="bar"><div style={{ width: `${i.posPct}%`, background: "#16a34a" }} /><div style={{ width: `${i.neuPct}%`, background: "#9ca3af" }} /><div style={{ width: `${i.negPct}%`, background: "#dc2626" }} /></div>
@@ -345,6 +634,31 @@ export default function Home() {
               ) : <p className="small">Lengkapi profil dapil dan catat aspirasi dulu.</p>}
             </div>
             <div className="card">
+              <h3 style={{ marginTop: 0 }}>Dokumen Pendukung — RUU / Perda / APBD / Surat Dinas (PDF)</h3>
+              <p className="small">Unggah PDF — teksnya dibaca di browser Anda (tidak ada berkas yang dikirim ke server) lalu disimpan sebagai bukti pendukung. Generator dokumen hanya menyebut judul dan jumlah dokumen ini; angka dari isi dokumen <b>tidak dikutip otomatis</b> — periksa isinya sebelum memakai angka dari dokumen.</p>
+              <div className="grid g2">
+                <select id="pdf-kind" defaultValue="Perda">{["RUU", "Perda", "APBD", "Surat Dinas", "Dokumen"].map((s) => <option key={s}>{s}</option>)}</select>
+                <input type="file" accept=".pdf,application/pdf" disabled={pdfBusy} onChange={async (e) => {
+                  const f = e.target.files?.[0]; if (!f) return;
+                  setPdfBusy(true); setMsg("");
+                  try {
+                    const text = await extractPdfText(f);
+                    if (!text) throw new Error("Tidak ada teks yang bisa dibaca dari PDF ini (mungkin hasil pindaian gambar). Tempel teksnya manual lewat tombol di bawah.");
+                    const kind = (document.getElementById("pdf-kind") as HTMLSelectElement)?.value || "Dokumen";
+                    await api("/api/legislative/evidence", "POST", { title: f.name.replace(/\.pdf$/i, ""), kind, text });
+                    setMsg(`Dokumen "${f.name}" tersimpan (${text.length.toLocaleString("id-ID")} karakter terbaca).`); loadAll();
+                  } catch (err: any) { setMsg(err.message); }
+                  setPdfBusy(false); e.target.value = "";
+                }} />
+              </div>
+              {pdfBusy && <p className="small">Membaca PDF di browser…</p>}
+              <h4>Dokumen Tersimpan ({docEvidence.length})</h4>
+              {docEvidence.length === 0 && <p className="small">Belum ada dokumen pendukung.</p>}
+              {docEvidence.map((d) => (
+                <p key={d.id} className="small" style={{ margin: "6px 0" }}><b>{d.title}</b> <span className="tag">{d.kind}</span> · {new Date(d.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })} <button className="btn-ghost" style={{ padding: "4px 8px" }} onClick={async () => { if (confirm("Hapus dokumen pendukung ini?")) { await api(`/api/legislative/evidence/${d.id}`, "DELETE"); loadAll(); } }}>Hapus</button></p>
+              ))}
+            </div>
+            <div className="card">
               <h3 style={{ marginTop: 0 }}>Generator Dokumen Legislasi</h3>
               <p className="small">Dokumen disusun dari angka dapil Anda yang dihitung server. AI tidak boleh menyebut angka di luar bukti itu, dan celah data diakui secara jujur.</p>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -384,8 +698,8 @@ export default function Home() {
         {tab === "konsultan" && (
           <div className="grid">
             <div className="card">
-              <h3 style={{ marginTop: 0 }}>Konsultan AI</h3>
-              <p className="small">Tanyakan apa pun soal dapil Anda — prioritas minggu ini, isu yang sedang naik, bahan reses atau rapat kerja. Jawaban dihitung dari aspirasi, isu, dan dokumen yang <b>Anda catat sendiri</b> di aplikasi ini. Konsultan ini <b>tidak</b> membaca media sosial live dan tidak bisa menjawab soal data yang belum Anda catat (misalnya isi APBD) — kalau datanya belum ada, ia akan bilang begitu, bukan mengarang. Keputusan tetap di tangan Anda.</p>
+              <h3 style={{ marginTop: 0 }}>Agen Konsultan AI</h3>
+              <p className="small">Ini agen, bukan chatbot template: sebelum menjawab, ia menyusun rencana lalu <b>memanggil tool</b> atas data dapil Anda sendiri — mencari aspirasi mendesak, memeriksa isu naik, membuat draf balasan, bahkan membuat dokumen legislasi. Jejak tool-nya ditampilkan di bawah jawaban supaya bisa Anda periksa. Ia <b>tidak</b> membaca media sosial live dan tidak bisa menjawab soal data yang belum Anda catat (misalnya isi APBD) — kalau datanya belum ada, ia akan bilang begitu, bukan mengarang. Tindakan yang mengubah data (buat draf, buat dokumen, ubah status) hanya jalan kalau Anda yang memintanya. Keputusan tetap di tangan Anda.</p>
               {chatMsgs.length === 0 && (
                 <div>
                   <p className="small">Belum ada percakapan. Coba salah satu pertanyaan ini:</p>
@@ -403,6 +717,15 @@ export default function Home() {
                       <div className="small" style={{ fontWeight: 700, marginBottom: 4 }}>{m.role === "user" ? "Anda" : "Konsultan AI"}</div>
                       <pre>{m.content}</pre>
                     </div>
+                  ))}
+                </div>
+              )}
+              {agentTools.length > 0 && (
+                <div className="card" style={{ marginBottom: 12, background: "#f8fafc" }}>
+                  <b>🔧 Alat yang dipakai agen pada jawaban terakhir</b>
+                  <p className="small">Agen tidak menjawab dari ingatan — ia memanggil tool ini atas data dapil Anda, dan hasilnya bisa Anda periksa:</p>
+                  {agentTools.map((t, idx) => (
+                    <p key={idx} className="small" style={{ margin: "6px 0" }}><span className="tag">{t.name}</span> {t.result}</p>
                   ))}
                 </div>
               )}
@@ -425,31 +748,68 @@ export default function Home() {
           </div>
         )}
         {tab === "laporan" && (
-          <div className="card">
-            <h3 style={{ marginTop: 0 }}>Laporan Kinerja Mingguan (dari data Anda sendiri)</h3>
-            <p>Periode: 7 hari terakhir · Dapil: {profile?.dapilName || "belum diatur"}</p>
-            <div className="grid g3">
-              <div><div className="stat">{aspirations.length}</div><div className="small">Total aspirasi tercatat</div></div>
-              <div><div className="stat">{aspirations.filter((a) => a.status === "Selesai").length}</div><div className="small">Selesai</div></div>
-              <div><div className="stat">{issues.length}</div><div className="small">Isu terpantau</div></div>
+          <div className="grid">
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Laporan Bulanan — bukti kerja {new Date().toLocaleDateString("id-ID", { month: "long", year: "numeric" })}</h3>
+              <p>Dapil: {profile?.dapilName || "belum diatur"} · Dihitung dari data yang Anda catat di Adapil.ai.</p>
+              {(() => {
+                const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), 1);
+                const mAsp = aspirations.filter((a) => new Date(a.createdAt) >= start);
+                const mDone = mAsp.filter((a) => a.status === "Selesai");
+                const mFu = allFollowUps.filter((f) => new Date(f.createdAt) >= start);
+                const mFuDone = mFu.filter((f) => f.status === "Selesai");
+                const mOver = aspirations.filter((a) => isOverdue(a));
+                return (
+                  <div>
+                    <div className="grid g4">
+                      <div><div className="stat">{mAsp.length}</div><div className="small">Aspirasi masuk bulan ini</div></div>
+                      <div><div className="stat">{mDone.length}</div><div className="small">Selesai bulan ini</div></div>
+                      <div><div className="stat">{mFu.length}</div><div className="small">Tindak lanjut ke dinas</div></div>
+                      <div><div className="stat">{mOver.length}</div><div className="small">Lewat tenggat</div></div>
+                    </div>
+                    <h4>Per Kategori (bulan ini)</h4>
+                    {Object.entries(mAsp.reduce((acc: Record<string, number>, a) => { acc[a.category] = (acc[a.category] || 0) + 1; return acc; }, {})).map(([c, n]) => <p key={c}>{c}: <b>{n}</b> aspirasi</p>)}
+                    {mAsp.length === 0 && <p className="small">Belum ada aspirasi bulan ini.</p>}
+                    <h4>Tindak Lanjut ke Dinas (bulan ini)</h4>
+                    {mFu.length === 0 && <p className="small">Belum ada tindak lanjut tercatat — catat di detail aspirasi (nama dinas, nomor surat, status).</p>}
+                    {mFu.slice(0, 10).map((f) => <p key={f.id} className="small">{f.agency} — {f.status}{f.ref ? ` · ref: ${f.ref}` : ""} · {new Date(f.date).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</p>)}
+                    <p className="small">Tindak lanjut selesai: {mFuDone.length} dari {mFu.length}.</p>
+                    <h4>Isu Terpantau</h4>
+                    {issues.map((i) => <p key={i.id}>{i.title} — {i.platform}, negatif {i.negPct}%, tren {i.trend}, status {i.status}</p>)}
+                    {issues.length === 0 && <p className="small">Belum ada isu.</p>}
+                    <h4>Titik Buta</h4>
+                    <p>{evidence?.blindSpots.length ? evidence.blindSpots.join(", ") : "Tidak ada."}</p>
+                    <button className="btn-amber" onClick={() => window.print()}>Cetak / simpan PDF laporan ini</button>
+                  </div>
+                );
+              })()}
             </div>
-            <h4>Per Kategori</h4>
-            {Object.entries(byCat).map(([c, n]) => <p key={c}>{c}: <b>{n}</b> aspirasi</p>)}
-            <h4>Isu Terpantau</h4>
-            {issues.map((i) => <p key={i.id}>{i.title} — {i.platform}, negatif {i.negPct}%, tren {i.trend}, status {i.status}</p>)}
-            {issues.length === 0 && <p className="small">Belum ada isu.</p>}
-            <h4>Titik Buta</h4>
-            <p>{evidence?.blindSpots.length ? evidence.blindSpots.join(", ") : "Tidak ada."}</p>
-            <p className="small">Laporan ini dihitung dari data yang Anda catat di Adapil.ai. Semakin lengkap datanya, semakin bisa dipertanggungjawabkan laporannya.</p>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Evaluasi Agen — 30 hari terakhir</h3>
+              <p className="small">Dihitung dari jejak pemanggilan tool agen (bukan dari klaim). Ini mengukur <b>pemakaian</b>, bukan kualitas — draf yang “disetujui” berarti Anda menekan Setujui; apakah draf itu bagus di mata warga, hanya warga yang bisa menilai.</p>
+              {evaluation ? (
+                <div>
+                  <div className="grid g3">
+                    <div><div className="stat">{evaluation.totalToolCalls}</div><div className="small">Pemanggilan tool</div></div>
+                    <div><div className="stat">{evaluation.actions}</div><div className="small">Tindakan agen</div></div>
+                    <div><div className="stat">{evaluation.acceptanceRate === null ? "—" : `${evaluation.acceptanceRate}%`}</div><div className="small">Tindakan disetujui</div></div>
+                  </div>
+                  <p className="small">Tindakan disetujui: {evaluation.acceptedActions} dari {evaluation.actions} · Draf disetujui: {evaluation.approvedDrafts} · Dokumen dibuat: {evaluation.docsCreated} · Koreksi yang dipelajari: {evaluation.correctionsLearned}</p>
+                  <h4>Tool yang paling dipakai</h4>
+                  {Object.entries(evaluation.byTool).sort((a, b) => b[1] - a[1]).map(([t, n]) => <p key={t} className="small"><span className="tag">{t}</span> {n}×</p>)}
+                  {evaluation.totalToolCalls === 0 && <p className="small">Belum ada pemanggilan tool — coba tanyakan sesuatu ke Agen Konsultan.</p>}
+                </div>
+              ) : <p className="small">Evaluasi belum bisa dimuat.</p>}
+            </div>
           </div>
         )}
         {tab === "paket" && (
           <div className="grid">
             <div className="card">
               <h3 style={{ marginTop: 0 }}>Paket Adapil.ai (draf — belum ada pembayaran aktif)</h3>
-              <p className="small">Checkout berlabel <b>SIMULASI</b> selama MIDTRANS_SERVER_KEY belum dipasang — tidak ada tagihan nyata. Pasang kunci Midtrans untuk transaksi Snap sungguhan.</p>
-              <div className="grid g4">
-                {(Object.entries({ starter: ["Starter", "Rp1.000.000/bulan", "1 politisi, 1 dapil, inbox aspirasi + peta isu dasar."], pro: ["Pro", "Rp1.700.000/bulan", "Starter + Isu & Sentimen, Asisten Legislasi, Konsultan AI, laporan otomatis."], timses: ["Timses / Partai", "Rp5.000.000/bulan", "Multi-user, multi-dapil, peta kampanye, manajemen relawan."], kampanye: ["Paket Kampanye", "Rp15–50 juta / 3–6 bulan", "Setup dapil, monitoring intensif, pendampingan tim."] }) as Array<[string, [string, string, string]]>).map(([k, [name, price, desc]]) => (
+              <p className="small">Langganan berbayar hanya 2. Akun baru mulai gratis sebagai Starter (1 politisi, 1 dapil, inbox aspirasi). Checkout berlabel <b>SIMULASI</b> selama MIDTRANS_SERVER_KEY belum dipasang — tidak ada tagihan nyata. Pasang kunci Midtrans untuk transaksi Snap sungguhan.</p>
+              <div className="grid g2">
+                {(Object.entries({ pro: ["Pro", "Rp499.000/bulan", "Starter + Isu & Sentimen, Asisten Legislasi, Konsultan AI, laporan otomatis."], timses: ["Timses / Partai", "Rp1.000.000/bulan", "Pro + multi-user, multi-dapil, peta kampanye, manajemen relawan."] }) as Array<[string, [string, string, string]]>).map(([k, [name, price, desc]]) => (
                   <div key={k} className="card">
                     <b>{name}</b><div className="stat" style={{ fontSize: 20 }}>{price}</div>
                     <p className="small">{desc}</p>
@@ -477,69 +837,10 @@ export default function Home() {
   );
 }
 
-const ISLANDS = [
-  { id: "sumatra", name: "Sumatra", d: "M70,110 C110,60 170,70 185,110 C200,150 170,210 130,240 C95,265 60,220 55,170 C52,140 55,125 70,110 Z", label: [118, 165], info: "Pulau Sumatra — aspirasi warga dari Aceh sampai Lampung masuk lewat kanal yang sama: WhatsApp, reses, dan DM." },
-  { id: "jawa", name: "Jawa", d: "M300,300 C360,285 470,285 540,300 C560,312 540,328 480,330 C400,332 320,328 295,315 Z", label: [400, 275], info: "Pulau Jawa — pusat rapat kerja dan pembahasan anggaran. Bahan rapat yang baik selalu berangkat dari data dapil, bukan dari ingatan." },
-  { id: "kalimantan", name: "Kalimantan", d: "M400,80 C470,50 560,70 580,130 C600,190 560,250 490,255 C420,260 370,210 375,150 C378,110 385,95 400,80 Z", label: [455, 165], info: "Pulau Kalimantan — dapil yang luas: satu aspirasi soal jalan atau air bersih bisa berarti perjalanan berjam-jam bagi warga." },
-  { id: "sulawesi", name: "Sulawesi", d: "M620,110 C650,80 690,90 695,130 C700,160 680,180 700,210 C715,235 700,265 670,255 C640,245 630,210 635,180 C638,150 610,140 620,110 Z", label: [645, 165], info: "Pulau Sulawesi — isu yang viral di satu kabupaten bisa cepat menyebar ke kabupaten tetangga. Radar isu membantu merespons sebelum terlambat." },
-  { id: "papua", name: "Papua", d: "M740,150 C800,120 870,140 880,180 C890,220 850,250 790,245 C740,240 710,200 720,170 C725,155 730,155 740,150 Z", label: [790, 200], info: "Pulau Papua — wilayah dengan jarak dan akses yang menantang. Mencatat aspirasi per wilayah membuat titik buta data terlihat jelas." },
-  { id: "ntb", name: "NTB — fokus Adapil", d: "M545,338 C565,330 600,330 615,340 C620,348 600,355 575,354 C550,353 535,346 545,338 Z", label: [560, 322], info: "NTB — fokus Adapil saat ini: 60 dapil (DPR RI 2, DPRD Provinsi 8, DPRD kabupaten/kota 50), total 461 kursi. Klik pulau lain untuk melihat gambaran umum." },
-];
-
-/** Peta Indonesia stilasi (bukan peta geografis presisi) + elemen kerja politik.
- *  Pulau bisa diklik — NTB ditandai denyut amber karena di sanalah katalog dapil Adapil lengkap. */
-function IndonesiaMap({ compact = false }: { compact?: boolean }) {
-  const [sel, setSel] = useState("ntb");
-  const active = ISLANDS.find((i) => i.id === sel) || ISLANDS[5];
-  return (
-    <div className="hero-map card fade-up" style={{ border: "none" }}>
-      <h2 style={{ marginTop: 0 }}>{compact ? "Dapil Anda di Indonesia" : "Satu Peta, Semua Kerja Dapil"}</h2>
-      {!compact && <p style={{ opacity: .9, marginTop: 4 }}>Klik sebuah pulau untuk melihat gambaran kerjanya. Denyut amber menandai <b>NTB</b> — wilayah fokus Adapil saat ini.</p>}
-      <div className="map-wrap">
-        <svg viewBox="0 0 900 380" role="img" aria-label="Peta stilasi Indonesia — klik pulau untuk detail">
-          <path className="dash-line" d="M580,344 C520,300 460,320 400,315" />
-          <path className="dash-line" d="M580,344 C640,300 700,260 760,220" />
-          <path className="dash-line" d="M580,344 C500,260 460,220 460,170" />
-          {ISLANDS.map((is) => (
-            <path key={is.id} className={`island${sel === is.id ? " on" : ""}`} d={is.d} onClick={() => setSel(is.id)}>
-              <title>{is.name} — klik untuk detail</title>
-            </path>
-          ))}
-          {ISLANDS.map((is) => (
-            <text key={`l-${is.id}`} x={is.label[0]} y={is.label[1]} textAnchor="middle" className={is.id === "ntb" ? "island-label-amber" : "island-label"}>{is.name}</text>
-          ))}
-          <circle cx="580" cy="344" r="7" fill="#e8930c" />
-          <circle className="pulse-ring" cx="580" cy="344" r="10" />
-          <circle className="pulse-ring r2" cx="580" cy="344" r="10" />
-          <circle cx="180" cy="120" r="4" fill="#ffd28a" />
-          <circle cx="700" cy="130" r="4" fill="#ffd28a" />
-          <circle cx="830" cy="180" r="4" fill="#ffd28a" />
-        </svg>
-        {!compact && (
-          <>
-            <div className="float-chip" style={{ top: "6%", left: "4%", animationDelay: "0s" }}>✦ Aspirasi Warga</div>
-            <div className="float-chip" style={{ top: "12%", right: "5%", animationDelay: "1.2s" }}>✦ Reses</div>
-            <div className="float-chip" style={{ bottom: "18%", left: "8%", animationDelay: "2s" }}>✦ Pokir</div>
-            <div className="float-chip" style={{ bottom: "8%", right: "8%", animationDelay: ".6s" }}>✦ Rapat Kerja</div>
-          </>
-        )}
-      </div>
-      {!compact && (
-        <>
-          <div className="map-info"><b>{active.name}.</b> {active.info}</div>
-          <div className="work-strip" aria-hidden="true">
-            <span><b>Reses</b> · Pokir · Rapat Kerja · Pengawasan · APBD · Aspirasi Warga · Klarifikasi Hoaks · Laporan Kinerja ·&nbsp;</span>
-            <span><b>Reses</b> · Pokir · Rapat Kerja · Pengawasan · APBD · Aspirasi Warga · Klarifikasi Hoaks · Laporan Kinerja ·&nbsp;</span>
-          </div>
-          <p className="small" style={{ color: "#cfe0ff", marginBottom: 0 }}>Peta di atas adalah stilasi (bentuk pulau disederhanakan), bukan peta geografis presisi. Data dapil lengkap tersedia untuk NTB.</p>
-        </>
-      )}
-    </div>
-  );
-}
-
 function ProfileTab({ pf, setPf, onSaved, setMsg }: { pf: Profile; setPf: (p: Profile) => void; onSaved: (p: Profile) => void; setMsg: (s: string) => void }) {
   const [dapils, setDapils] = useState<any[]>([]);
+  const [cp, setCp] = useState({ current: "", next: "" });
+  const [cpMsg, setCpMsg] = useState("");
   useEffect(() => {
     fetch("/api/dapil").then((r) => r.json()).then((d) => setDapils(d.items || [])).catch(() => setDapils([]));
   }, []);
@@ -571,9 +872,23 @@ function ProfileTab({ pf, setPf, onSaved, setMsg }: { pf: Profile; setPf: (p: Pr
         {selected && <p className="small"><b>{selected.name}</b> — {selected.seats} kursi · Wilayah: {selected.regions.join(", ")}</p>}
         <label className="small">Daftar wilayah (otomatis dari dapil, bisa diubah)</label>
         <textarea rows={3} value={pf.regions} onChange={(e) => setPf({ ...pf, regions: e.target.value })} placeholder="Kecamatan / kabupaten-kota, dipisah koma" />
+        <label className="small">Nomor WhatsApp akun ini (untuk kirim Briefing Pagi Agen — format: 6281234567890)</label>
+        <input placeholder="62812..." value={pf.phone} onChange={(e) => setPf({ ...pf, phone: e.target.value })} />
         <button className="btn-amber" type="submit">Simpan profil</button>
       </form>
       <p className="small">Katalog dapil: DPR RI NTB I (3 kursi) &amp; NTB II (8 kursi); DPRD Provinsi NTB 1–8 (65 kursi); DPRD 10 kabupaten/kota NTB (50 dapil, 385 kursi).</p>
+      <hr />
+      <h4>Ganti Kata Sandi</h4>
+      <form className="grid" onSubmit={async (e) => {
+        e.preventDefault(); setCpMsg("");
+        try { await api("/api/auth/change-password", "POST", { currentPassword: cp.current, newPassword: cp.next }); setCp({ current: "", next: "" }); setCpMsg("Kata sandi berhasil diganti."); } catch (err: any) { setCpMsg(err.message); }
+      }}>
+        <input placeholder="Kata sandi lama" type="password" value={cp.current} onChange={(e) => setCp({ ...cp, current: e.target.value })} />
+        <input placeholder="Kata sandi baru (min. 6 karakter)" type="password" value={cp.next} onChange={(e) => setCp({ ...cp, next: e.target.value })} />
+        <button className="btn" type="submit">Ganti kata sandi</button>
+      </form>
+      {cpMsg && <p className="small">{cpMsg}</p>}
+      <p className="small">Reset kata sandi lewat email sudah bisa — pakai “Lupa kata sandi?” di halaman masuk (perlu layanan email Resend terpasang di Vercel; bila belum terpasang, tautan tidak bisa dikirim).</p>
     </div>
   );
 }

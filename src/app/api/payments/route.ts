@@ -16,8 +16,10 @@ export async function POST(req: Request) {
   try {
     const user = await requireUser();
     const b = await req.json().catch(() => ({}));
-    const plan = String(b.plan || "starter");
-    const amount = PLAN_AMOUNTS[plan] ?? 1000000;
+    const plan = String(b.plan || "");
+    // Langganan berbayar hanya Pro dan Timses / Partai. Starter gratis (tidak dibeli).
+    if (plan !== "pro" && plan !== "timses") return NextResponse.json({ error: "Paket yang bisa dibeli hanya Pro (Rp499.000/bulan) dan Timses / Partai (Rp1.000.000/bulan). Starter gratis." }, { status: 400 });
+    const amount = PLAN_AMOUNTS[plan];
     const orderId = `ADAPIL-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const snap = await createSnapOrder(orderId, amount, user.email, user.name);
     const payment = await prisma.payment.create({

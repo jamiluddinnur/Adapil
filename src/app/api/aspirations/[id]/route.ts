@@ -20,6 +20,9 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
         priority: b.priority !== undefined ? String(b.priority) : undefined,
         followUp: b.followUp !== undefined ? String(b.followUp) : undefined,
         draftReply: b.draftReply !== undefined ? String(b.draftReply) : undefined,
+        assignedTo: b.assignedTo !== undefined ? String(b.assignedTo) : undefined,
+        dueDate: b.dueDate !== undefined ? (b.dueDate ? new Date(String(b.dueDate)) : null) : undefined,
+        draftStatus: b.draftStatus !== undefined && ["draf", "disetujui", "ditolak"].includes(String(b.draftStatus)) ? String(b.draftStatus) : undefined,
       },
     });
     return NextResponse.json({ ok: true, item });

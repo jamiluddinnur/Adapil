@@ -24,6 +24,7 @@ export async function POST(req: Request) {
       dapilId: String(body.dapilId || ""),
       dapilName: dapil ? `${dapil.name} — ${dapil.level} (${dapil.seats} kursi)` : String(body.dapilName || ""),
       regions: dapil ? dapil.regions.join(", ") : String(body.regions || ""),
+      phone: String(body.phone || ""),
     };
     const profile = await prisma.profile.upsert({
       where: { userId: user.id },

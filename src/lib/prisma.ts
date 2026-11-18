@@ -8,11 +8,14 @@ export const prisma =
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
+// Langganan berbayar hanya dua: Pro dan Timses / Partai.
+// Starter adalah paket awal gratis (bukan langganan yang dibeli) — 1 politisi,
+// 1 dapil, inbox aspirasi. Paket Kampanye dihapus dari daftar langganan.
 export const PLANS = {
-  starter: { name: "Starter", priceMonthly: 1000000, desc: "1 politisi, 1 dapil, inbox aspirasi + peta isu dasar." },
-  pro: { name: "Pro", priceMonthly: 1700000, desc: "Starter + Isu & Sentimen, Asisten Legislasi, laporan kinerja otomatis." },
-  timses: { name: "Timses / Partai", priceMonthly: 5000000, desc: "Multi-user, multi-dapil, peta kampanye, manajemen relawan." },
-  kampanye: { name: "Paket Kampanye", priceMonthly: 0, desc: "Rp15–50 juta per paket 3–6 bulan: setup dapil, monitoring intensif, pendampingan tim." },
+  starter: { name: "Starter", priceMonthly: 0, desc: "Paket awal gratis: 1 politisi, 1 dapil, inbox aspirasi." },
+  pro: { name: "Pro", priceMonthly: 499000, desc: "Starter + Isu & Sentimen, Asisten Legislasi, Konsultan AI, laporan kinerja otomatis." },
+  timses: { name: "Timses / Partai", priceMonthly: 1000000, desc: "Pro + multi-user, multi-dapil, peta kampanye, manajemen relawan." },
 } as const;
 export type PlanKey = keyof typeof PLANS;
-export const PLAN_AMOUNTS: Record<string, number> = { starter: 1000000, pro: 1700000, timses: 5000000, kampanye: 15000000 };
+export const PAID_PLANS = ["pro", "timses"] as const;
+export const PLAN_AMOUNTS: Record<string, number> = { starter: 0, pro: 499000, timses: 1000000 };

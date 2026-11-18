@@ -1,20 +1,43 @@
 # Adapil.ai — Setiap Aspirasi Warga Terjawab.
 
 Constituent Intelligence Dashboard untuk politisi Indonesia: inbox aspirasi,
-Isu & Sentimen media sosial dapil, Asisten Legislasi anti-buta-data, dan Konsultan AI
-(tanya-jawab berbasis bukti dapil: prioritas, isu naik, bahan reses/rapat kerja).
+Isu & Sentimen media sosial dapil, Asisten Legislasi anti-buta-data, dan Agen
+Konsultan (AI agent: menyusun rencana, memanggil tool atas data dapil sendiri,
+membuat draf/dokumen, dan mencatat jejak tool-nya) plus Agen Pagi (pemeriksaan
+otomatis sekali sehari dengan rencana tindakan).
 Fokus wilayah: **NTB** (DPR RI, DPRD Provinsi, dan DPRD 10 kabupaten/kota).
 
-- **Starter:** Rp1.000.000/bulan
-- **Pro:** Rp1.700.000/bulan
-- **Timses / Partai:** Rp5.000.000/bulan
-- **Paket Kampanye:** Rp15–50 juta per 3–6 bulan
+- **Starter:** gratis (paket awal — 1 politisi, 1 dapil, inbox aspirasi)
+- **Pro:** Rp499.000/bulan
+- **Timses / Partai:** Rp1.000.000/bulan
+- Langganan berbayar hanya Pro dan Timses / Partai. Paket Kampanye dihapus dari daftar langganan.
 - **Login:** email + kata sandi (hash scrypt), sesi server 30 hari, data tiap akun terpisah
-- **AI:** rule-based keyword (tanpa kunci LLM) sebagai default; bila `OPENAI_API_KEY`
-  dipasang, klasifikasi / sentimen / draf memakai OpenAI. Sentimen selalu
-  **estimasi dari contoh unggahan yang ditempel tim — BUKAN data live** platform
-  media sosial. Tidak ada koneksi live ke media sosial, tidak ada auto-posting;
-  manusia menyetujui setiap draf.
+- **AI agent:** Agen Konsultan di `src/lib/agent.ts` memakai 8 tool
+  (`ringkas_dapil`, `cari_aspirasi`, `aspirasi_mendesak`, `isu_naik`,
+  `titik_buta`, `buat_draf_balasan`, `buat_dokumen`, `ubah_status_aspirasi`).
+  Tanpa kunci LLM, perencana rule-based yang memilih tool; dengan `OPENAI_API_KEY`
+  atau `GEMINI_API_KEY`, model yang memilih lewat function calling
+  (`src/lib/llm.ts` — provider-agnostik). Setiap pemanggilan tool dicatat ke
+  `AgentToolLog` dan ditampilkan di UI ("Alat yang dipakai"); evaluasi agen
+  (30 hari: pemanggilan tool, tindakan disetujui, draf disetujui) ada di tab
+  Laporan. Agen Pagi memeriksa dapil sekali sehari — via cron Vercel
+  (`/api/cron/morning-briefing`, 07:00 WITA) dan briefing dikirim lewat
+  WhatsApp/email bila terhubung, atau dibaca di Beranda. Koreksi pengguna
+  atas saran AI (`/api/ai-corrections`) dipakai klasifikasi berikutnya.
+  Sentimen selalu **estimasi dari contoh unggahan yang ditempel tim — BUKAN
+  data live** platform media sosial. Tidak ada auto-posting; manusia
+  menyetujui setiap draf dan setiap tindakan agen.
+- **WhatsApp-first:** staf forward pesan warga → tempel di tab Aspirasi →
+  agen mengekstrak jadi aspirasi (`/api/aspirations/extract`); atau hubungkan
+  webhook WhatsApp Cloud API supaya pesan masuk langsung jadi aspirasi.
+- **Tim & bukti kerja:** tab Tim (politisi + staf, penugasan + tenggat per
+  aspirasi), jejak tindak lanjut ke dinas (`FollowUp`: dinas, nomor surat,
+  status), Laporan Bulanan (bukti kerja, bisa dicetak/PDF), persetujuan draf
+  (draf → disetujui/ditolak), upload PDF RUU/Perda/APBD (teks diekstrak di
+  browser, hanya judul yang dikutip dokumen — angka tidak dikutip otomatis),
+  reset kata sandi lewat email (bila Resend terpasang).
+- **Guardrail hoaks:** isu berlabel hoaks tanpa tautan sumber resmi tidak
+  bisa dibuatkan draf klarifikasi — tim harus menempel sumber dulu.
 - **Midtrans:** Snap aktif otomatis saat `MIDTRANS_SERVER_KEY` dipasang;
   tanpa kunci, checkout berjalan dalam **mode simulasi yang diberi label jelas**
   dan tidak ada tagihan nyata.
@@ -69,7 +92,13 @@ git push -u origin main
 
 - `DATABASE_URL` — connection string Postgres (Neon/Supabase)
 - `SESSION_SECRET` — string acak panjang (mis. `openssl rand -hex 32`)
-- `OPENAI_API_KEY` — opsional; kosong = AI rule-based
+- `OPENAI_API_KEY` — opsional; pasang SALAH SATU dari OpenAI/Gemini untuk menyalakan LLM. Kosong = AI rule-based.
+- `GEMINI_API_KEY` — opsional; alternatif OpenAI (dari Google AI Studio, gratis ada kuotanya). Bila kedua kunci dipasang, OpenAI dipakai duluan; paksa salah satu dengan `LLM_PROVIDER=openai` atau `LLM_PROVIDER=gemini`.
+- `LLM_PROVIDER` — opsional: `openai` / `gemini` / kosong (auto).
+- `RESEND_API_KEY` + `EMAIL_FROM` — opsional; untuk kirim Briefing Pagi lewat email dan tautan reset kata sandi. Tanpa ini, briefing tidak terkirim (tetap bisa dibaca di Beranda) dan reset kata sandi tidak bisa dikirim.
+- `WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID` — opsional; untuk kirim Briefing Pagi lewat WhatsApp dan balasan konfirmasi webhook. Dari Meta for Developers → WhatsApp.
+- `WHATSAPP_VERIFY_TOKEN` + `WHATSAPP_OWNER_EMAIL` — opsional; untuk webhook pesan masuk (warga kirim pesan → jadi aspirasi otomatis). Callback URL: `https://adapil.vercel.app/api/webhooks/whatsapp`.
+- `CRON_SECRET` — disarankan; mengunci rute cron Agen Pagi (`/api/cron/morning-briefing`, jadwal 07:00 WITA di `vercel.json`). Vercel mengirimkannya otomatis bila dipasang.
 - `MIDTRANS_SERVER_KEY` — dari dashboard Midtrans (kosongkan = mode simulasi)
 - `MIDTRANS_CLIENT_KEY` — dari dashboard Midtrans (opsional, untuk Snap.js)
 - `MIDTRANS_IS_PRODUCTION` — `false` (sandbox) / `true` (produksi)
@@ -145,7 +174,7 @@ src/lib/prisma.ts         # Prisma client + definisi paket
 src/lib/auth.ts           # Hash scrypt, sesi 30 hari, cookie httpOnly
 src/lib/ai.ts             # AI rule-based (klasifikasi/sentimen) + OpenAI opsional
 src/lib/midtrans.ts       # Snap order, verifikasi signature, cek status
-src/app/page.tsx          # Beranda, Profil & Dapil, Aspirasi, Isu & Sentimen, Legislasi, Konsultan AI, Laporan, Paket + peta Indonesia animasi (IndonesiaMap)
+src/app/page.tsx          # Beranda, Profil & Dapil, Aspirasi, Isu & Sentimen, Legislasi, Konsultan AI, Laporan, Paket
 src/app/api/auth/*        # register, login, logout, me
 src/app/api/dapil         # Katalog dapil NTB (publik)
 src/app/api/profile       # Profil politisi & dapil
@@ -172,4 +201,3 @@ public/adapil-logo.webp  # Logo resmi Adapil.ai (dipakai di header & favicon)
   jelas sebagai estimasi dari contoh.
 - **Upload dokumen RUU/Perda/APBD:** belum ada — generator legislasi bekerja
   dari data aspirasi dapil yang tercatat, bukan dari membaca file PDF.
-  

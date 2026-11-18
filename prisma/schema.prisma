@@ -23,6 +23,13 @@ model User {
   issues       Issue[]
   legDocs      LegislativeDoc[]
   consultantMessages ConsultantMessage[]
+  agentRuns    AgentRun[]
+  aiCorrections AiCorrection[]
+  teamMembers  TeamMember[]
+  followUps    FollowUp[]
+  agentToolLogs AgentToolLog[]
+  docEvidence  DocEvidence[]
+  passwordResets PasswordResetToken[]
   subscription Subscription?
   payments     Payment[]
 }
@@ -47,6 +54,7 @@ model Profile {
   dapilId   String   @default("")
   dapilName String   @default("")
   regions   String   @default("") // comma-separated kecamatan / kabupaten-kota
+  phone     String   @default("") // nomor WhatsApp akun ini (untuk kirim briefing Agen Pagi)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -64,6 +72,10 @@ model Aspiration {
   priority   String   @default("Sedang") // Mendesak | Tinggi | Sedang | Rendah
   followUp   String   @default("") @db.Text
   draftReply String   @default("") @db.Text
+  assignedTo String   @default("") // id TeamMember penanggung jawab ("" = belum ditugaskan)
+  dueDate    DateTime? // tenggat tindak lanjut
+  draftStatus String  @default("draf") // draf | disetujui | ditolak
+  followUps   FollowUp[]
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
@@ -85,6 +97,7 @@ model Issue {
   recommendation      String   @default("") @db.Text // rekomendasi pesan (3 sudut: empati, fakta, aksi)
   clarification       String   @default("") @db.Text // draf klarifikasi hoaks
   isHoax              Boolean  @default(false)
+  sourceUrl           String   @default("") // tautan sumber isu (berita / unggahan asli), dicatat tim
   status              String   @default("Dipantau") // Dipantau | Direspons | Selesai
   analysisNote        String   @default("") @db.Text // catatan kejujuran: estimasi dari contoh, bukan data live
   createdAt           DateTime @default(now())
@@ -117,11 +130,107 @@ model ConsultantMessage {
   createdAt DateTime @default(now())
 }
 
+// Jejak kerja Agen Pagi: satu baris per pemeriksaan harian (sekali sehari).
+// actions disimpan sebagai JSON string: [{ id, kind, title, detail, aspirationId?, docType? }]
+model AgentRun {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  summary   String   @db.Text
+  actions   String   @default("[]") @db.Text
+  deliveredVia String @default("") // cara briefing dikirim: email | whatsapp | salin-manual | belum-terkirim
+  createdAt DateTime @default(now())
+}
+
+// Tim kerja: politisi (pemilik akun) + staf. Staf ditugaskan ke aspirasi
+// (assignedTo) dengan tenggat (dueDate) — politisi membaca & menyetujui,
+// staf menindaklanjuti, agen menganalisis & menyiapkan draf.
+model TeamMember {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  role      String   @default("Staf") // Politisi | Staf
+  phone     String   @default("")
+  createdAt DateTime @default(now())
+}
+
+// Jejak tindak lanjut ke dinas/instansi — bukti kerja, bukan sekadar status.
+// Satu aspirasi bisa punya beberapa tindak lanjut (diajukan → diproses → selesai).
+model FollowUp {
+  id            String   @id @default(cuid())
+  aspirationId  String
+  aspiration    Aspiration @relation(fields: [aspirationId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agency        String   // dinas / instansi yang dituju
+  note          String   @default("") @db.Text
+  ref           String   @default("") // nomor surat / referensi
+  status        String   @default("Diajukan") // Diajukan | Diproses | Selesai | Ditolak
+  date          DateTime @default(now())
+  createdAt     DateTime @default(now())
+}
+
+// Jejak evaluasi agen: SETIAP pemanggilan tool dicatat (bukan cuma ditampilkan
+// di layar). Dari sinilah angka evaluasi dihitung: tool apa yang paling
+// dipakai, berapa tindakan yang disetujui pengguna, berapa draf/dokumen dibuat.
+model AgentToolLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tool      String
+  args      String   @default("") @db.Text // ringkasan argumen (JSON)
+  result    String   @default("") @db.Text // ringkasan hasil
+  source    String   @default("konsultan") // konsultan | agen-pagi | aksi | webhook
+  accepted  Boolean  @default(false) // true bila pengguna menyetujui/menjalankan hasilnya
+  createdAt DateTime @default(now())
+}
+
+// Dokumen pendukung legislasi (RUU / Perda / APBD / surat dinas): teks PDF
+// diekstrak di browser pengguna (pdfjs-dist) lalu disimpan sebagai teks —
+// tidak ada file yang diunggah ke server. Generator dokumen hanya menyebut
+// judul + jumlah dokumen ini, tidak mengarang angka dari isinya.
+model DocEvidence {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  kind      String   @default("Dokumen") // RUU | Perda | APBD | Surat Dinas | Dokumen
+  text      String   @default("") @db.Text
+  createdAt DateTime @default(now())
+}
+
+// Token reset kata sandi lewat email: hash SHA-256, kedaluwarsa 1 jam,
+// sekali pakai. Reset membatalkan semua sesi aktif akun itu.
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+// Pelajaran dari koreksi pengguna terhadap saran AI — inilah yang membuat
+// agen belajar: klasifikasi berikutnya memakai koreksi yang konteksnya cocok.
+model AiCorrection {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String   @default("klasifikasi") // klasifikasi
+  field     String   // category | priority
+  fromValue String   @default("")
+  toValue   String   @default("")
+  context   String   @default("") @db.Text // judul + isi aspirasi yang dikoreksi
+  createdAt DateTime @default(now())
+}
+
 model Subscription {
   id        String    @id @default(cuid())
   userId    String    @unique
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  plan      String    @default("starter") // starter | pro | timses | kampanye
+  plan      String    @default("starter") // starter (gratis, paket awal) | pro | timses — langganan berbayar hanya Pro dan Timses/Partai
   status    String    @default("active")
   trialEndsAt DateTime?
   renewsAt  DateTime?
